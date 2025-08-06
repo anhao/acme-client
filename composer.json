@@ -1,0 +1,64 @@
+{
+  "name": "alapi/acme-client",
+  "description": "Acme client library for ACME v2 written in PHP.",
+  "keywords": [
+    "acme",
+    "acme-client",
+    "lets",
+    "letsencrypt",
+    "zerossl",
+    "acme-v2",
+    "acme-v2-client",
+    "acme-v2-client-php"
+  ],
+  "homepage": "https://github.com/anhao/acme-client",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "An Hao",
+      "email": "im@alone88.cn",
+      "role": "Developer"
+    }
+  ],
+  "require": {
+    "php": "^8.2",
+    "ext-curl": "*",
+    "ext-json": "*",
+    "ext-mbstring": "*",
+    "ext-openssl": "*",
+    "guzzlehttp/guzzle": "^7.0",
+    "psr/http-client": "^1.0",
+    "psr/http-message": "^1.0|^2.0",
+    "psr/log": "^3.0",
+    "spatie/dns": "^2.5"
+  },
+  "require-dev": {
+    "friendsofphp/php-cs-fixer": "^3.85",
+    "pestphp/pest": "^3.8",
+    "phpstan/phpstan": "^2.1"
+  },
+  "autoload": {
+    "psr-4": {
+      "ALAPI\\Acme\\": "src"
+    },
+    "files": [
+      "src/Utils/helpers.php"
+    ]
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Tests\\": "tests"
+    }
+  },
+  "config": {
+    "sort-packages": true,
+    "allow-plugins": {
+      "pestphp/pest-plugin": true
+    }
+  },
+  "scripts": {
+    "cs-fix": "php-cs-fixer fix $1 --verbose",
+    "analyse": "phpstan analyse src --level 6",
+    "test": "vendor/bin/pest"
+  }
+}

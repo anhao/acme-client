@@ -1,0 +1,8 @@
+.idea
+composer.lock
+docs
+vendor
+.php-cs-fixer.cache
+certificates/
+test.php
+storage/

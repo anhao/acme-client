@@ -1,0 +1,9 @@
+parameters:
+  level: 6
+  ignoreErrors:
+    -
+      identifier: missingType.iterableValue
+    -
+      identifier: missingType.return
+    - 
+      identifier: if.alwaysFalse

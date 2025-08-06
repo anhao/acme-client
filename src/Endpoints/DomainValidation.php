@@ -1,0 +1,195 @@
+<?php
+
+declare(strict_types=1);
+/**
+ * This file is part of ALAPI.
+ *
+ * @package  ALAPI\Acme
+ * @link     https://www.alapi.cn
+ * @license  MIT License
+ * @copyright ALAPI <im@alone88.cn>
+ */
+
+namespace ALAPI\Acme\Endpoints;
+
+use ALAPI\Acme\Data\Transfer\AccountData;
+use ALAPI\Acme\Data\Transfer\DomainValidationData;
+use ALAPI\Acme\Data\Transfer\OrderData;
+use ALAPI\Acme\Enums\AuthorizationChallengeEnum;
+use ALAPI\Acme\Exceptions\DomainValidationException;
+use ALAPI\Acme\Http\ResponseHelper;
+use ALAPI\Acme\Security\Keys\JsonWebKey;
+use ALAPI\Acme\Security\Keys\Thumbprint;
+use ALAPI\Acme\Utils\Arr;
+use ALAPI\Acme\Validation\Challenges\DnsDigest;
+use ALAPI\Acme\Validation\Challenges\LocalChallengeTest;
+use Psr\Http\Message\ResponseInterface;
+
+class DomainValidation extends AbstractEndpoint
+{
+    /** @return DomainValidationData[] */
+    public function status(OrderData $orderData): array
+    {
+        $data = [];
+
+        foreach ($orderData->domainValidationUrls as $domainValidationUrl) {
+            $response = $this->client
+                ->getHttpClient()
+                ->post(
+                    $domainValidationUrl,
+                    $this->createKeyId($orderData->accountUrl, $domainValidationUrl)
+                );
+
+            if (ResponseHelper::getStatusCode($response) === 200) {
+                $data[] = DomainValidationData::fromResponse($response, $domainValidationUrl);
+
+                continue;
+            }
+
+            $this->logResponse('error', 'Cannot get domain validation', $response);
+        }
+
+        return $data;
+    }
+
+    /** @param DomainValidationData[] $challenges */
+    public function getValidationData(array $challenges, ?AuthorizationChallengeEnum $authChallenge = null): array
+    {
+        $thumbprint = Thumbprint::make($this->getAccountPrivateKey());
+
+        $authorizations = [];
+        foreach ($challenges as $domainValidationData) {
+            if (
+                (is_null($authChallenge) || $authChallenge === AuthorizationChallengeEnum::HTTP)
+                && ! empty($domainValidationData->file)
+            ) {
+                $authorizations[] = [
+                    'identifier' => $domainValidationData->identifier['value'],
+                    'type' => $domainValidationData->file['type'],
+                    'filename' => $domainValidationData->file['token'],
+                    'content' => $domainValidationData->file['token'] . '.' . $thumbprint,
+                ];
+            }
+
+            if (
+                (is_null($authChallenge) || $authChallenge === AuthorizationChallengeEnum::DNS)
+                && ! empty($domainValidationData->dns)
+            ) {
+                $authorizations[] = [
+                    'identifier' => $domainValidationData->identifier['value'],
+                    'type' => $domainValidationData->dns['type'],
+                    'name' => '_acme-challenge.' . $domainValidationData->identifier['value'],
+                    'value' => DnsDigest::make($domainValidationData->dns['token'], $thumbprint),
+                ];
+            }
+        }
+
+        return $authorizations;
+    }
+
+    /** @throws DomainValidationException */
+    public function start(
+        AccountData $accountData,
+        DomainValidationData $domainValidation,
+        AuthorizationChallengeEnum $authChallenge,
+        bool $localTest = true
+    ): ResponseInterface {
+        $this->client->logger('info', sprintf(
+            'Start %s challenge for %s',
+            $authChallenge->value,
+            Arr::get($domainValidation->identifier, 'value', '')
+        ));
+
+        $type = $authChallenge === AuthorizationChallengeEnum::DNS ? 'dns' : 'file';
+        $thumbprint = JsonWebKey::thumbprint(JsonWebKey::compute($this->getAccountPrivateKey()));
+
+        if (empty($domainValidation->{$type})) {
+            throw new DomainValidationException(sprintf('No %s challenge found for %s', $type, $domainValidation->identifier['value']));
+        }
+
+        $keyAuthorization = $domainValidation->{$type}['token'] . '.' . $thumbprint;
+
+        if ($localTest) {
+            if ($authChallenge === AuthorizationChallengeEnum::HTTP) {
+                LocalChallengeTest::http(
+                    $domainValidation->identifier['value'],
+                    $domainValidation->file['token'],
+                    $keyAuthorization,
+                    $this->client->getHttpClient()
+                );
+            }
+
+            if ($authChallenge === AuthorizationChallengeEnum::DNS) {
+                LocalChallengeTest::dns(
+                    $domainValidation->identifier['value'],
+                    '_acme-challenge',
+                    DnsDigest::make($domainValidation->{$type}['token'], $thumbprint),
+                );
+            }
+        }
+
+        $payload = [
+            'keyAuthorization' => $keyAuthorization,
+        ];
+
+        $data = $this->createKeyId($accountData->url, $domainValidation->{$type}['url'], $payload);
+
+        $response = $this->client->getHttpClient()->post($domainValidation->{$type}['url'], $data);
+
+        if (ResponseHelper::isClientError($response) || ResponseHelper::isServerError($response)) {
+            $body = ResponseHelper::parseBody($response);
+            $errorDetail = is_array($body) ? ($body['detail'] ?? 'Unknown error') : 'Unknown error';
+
+            $this->logResponse(
+                'error',
+                $errorDetail,
+                $response,
+                ['payload' => $payload, 'data' => $data]
+            );
+        }
+
+        return $response;
+    }
+
+    public function allChallengesPassed(OrderData $orderData): bool
+    {
+        $count = 0;
+        while (($status = $this->status($orderData)) && $count < 4) {
+            if ($this->challengeSucceeded($status)) {
+                break;
+            }
+
+            if ($count === 3) {
+                return false;
+            }
+
+            $this->client->logger('info', 'Challenge is not valid yet. Another attempt in 5 seconds.');
+
+            sleep(5);
+
+            ++$count;
+        }
+
+        return true;
+    }
+
+    /** @param DomainValidationData[] $domainValidation */
+    private function challengeSucceeded(array $domainValidation): bool
+    {
+        // Verify if the challenges have been passed.
+        foreach ($domainValidation as $status) {
+            $this->client->logger(
+                'info',
+                "Check {$status->identifier['type']} challenge of {$status->identifier['value']}."
+            );
+
+            if (! $status->isValid()) {
+                return false;
+            }
+        }
+
+        $this->client->logger('info', 'Challenge has been passed.');
+
+        return true;
+    }
+}
